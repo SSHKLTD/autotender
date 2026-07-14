@@ -43,6 +43,9 @@ jobs:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_API_URL: ${{ secrets.AI_API_URL }}
           AI_MODEL: ${{ secrets.AI_MODEL }}
+          # 直接寫入 Google Sheet(免 email):Apps Script 網頁應用程式 URL + token
+          SHEET_WEBHOOK_URL: ${{ secrets.SHEET_WEBHOOK_URL }}
+          WEBHOOK_TOKEN: ${{ secrets.WEBHOOK_TOKEN }}
         run: node scan.mjs
 
       - name: Commit updated state

@@ -13,6 +13,19 @@
 | `data/organisations.csv` | 同一份列表嘅 CSV 版(UTF-8) |
 | `data/new_organisations_only.csv` | 只包含今次新增機構,方便直接貼入現有 Google Sheet |
 
+## 兩種通知方式:email 或直接更新 Google Sheet
+
+`Code.gs` 頂部有兩個開關:
+
+```js
+const SEND_EMAIL = true;      // 發綜合報告 email
+const WRITE_TO_SHEET = true;  // 將發現直接寫入「掃描發現」分頁
+```
+
+- 想**唔要 email、淨係更新 Sheet**:設 `SEND_EMAIL = false; WRITE_TO_SHEET = true;`
+- 「掃描發現」分頁會自動建立,最新發現永遠置頂,一開 Sheet 就見到,方便定期查看。
+- 主掃描同 Playwright 補漏掃描嘅發現都會集中喺呢個分頁(來源欄區分)。
+
 ## 改良版 Code.gs 對比原版嘅分別
 
 1. **向同事群發報告** — 頂部新增 `RECIPIENTS` 名單,綜合報告會發俾名單上所有同事;

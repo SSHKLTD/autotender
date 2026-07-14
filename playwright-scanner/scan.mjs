@@ -10,6 +10,7 @@ import { loadOrganisations } from './lib/csv.mjs';
 import { launchBrowser, newContext, fetchPage } from './lib/browser.mjs';
 import { keywordCandidates, aiAnalyse } from './lib/filter.mjs';
 import { buildHtml, sendEmail } from './lib/email.mjs';
+import { postToSheet } from './lib/sheet.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..');
@@ -129,14 +130,23 @@ async function main() {
 
   console.log(`結果:新標書 ${newItems.length} 個,仍受阻 ${stillBlocked.length} 個`);
 
-  if (DRY_RUN) { console.log('(--dry-run:唔發 email、唔更新紀錄)'); return; }
+  if (DRY_RUN) { console.log('(--dry-run:唔寫 Sheet、唔發 email、唔更新紀錄)'); return; }
 
-  // 4. Email
+  // 4a. 直接寫入 Google Sheet(如有設定 SHEET_WEBHOOK_URL)
+  let wroteToSheet = false;
+  if (newItems.length) {
+    const r = await postToSheet(newItems);
+    if (r.ok) { wroteToSheet = true; console.log(`已寫入 Google Sheet「掃描發現」分頁:新增 ${r.added} 個`); }
+    else if (!r.skipped) console.log(`⚠️ 寫入 Sheet 失敗:${r.error || JSON.stringify(r.raw)}`);
+  }
+
+  // 4b. Email(如有設定 SMTP;同 Sheet 可並存,亦可只用其一)
   if (newItems.length || stillBlocked.length) {
     const subject = `[autotender補漏] ${newItems.length} 個新標書 · ${stillBlocked.length} 個仍受阻 — ${scanTime}`;
     const html = buildHtml(newItems, stillBlocked, scanTime);
     const sent = await sendEmail(subject, html, RECIPIENTS);
     if (sent) console.log(`已發送 email 俾 ${RECIPIENTS.join(', ')}`);
+    else if (!wroteToSheet) console.log('ℹ️ 未設定 SHEET_WEBHOOK_URL 亦未設定 SMTP,結果只印喺 log');
   }
 
   // 5. 更新已見紀錄

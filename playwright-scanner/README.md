@@ -48,23 +48,46 @@ SMTP_USER=you@example.com SMTP_PASS=app_password \
 RECIPIENTS=alex@sshk.ltd node scan.mjs
 ```
 
-## GitHub Actions
+## 交付方式:寫入 Google Sheet(免 email)或 email,兩者可擇一或並用
 
-`.github/workflows/playwright-scan.yml` 每日香港時間 **10:00**
-(排喺 Apps Script 主掃描 09:30 之後)自動執行,亦可喺 Actions 頁手動觸發。
+Scanner 支援兩種通知方式,設定邊個 secret 就用邊個(可同時):
 
-需要喺 repo **Settings → Secrets and variables → Actions** 設定:
+### 方式 A:直接寫入 Google Sheet(推薦,唔使搞 SMTP)
+
+發現會直接寫入你 Google Sheet 一個叫「**掃描發現**」嘅分頁(自動建立,最新永遠置頂),
+你隨時開 Sheet 就睇到,唔使收 email。做法:
+
+1. 喺 Google Sheet:擴充功能 → Apps Script,確保用咗最新 `apps-script/Code.gs`
+   (已含 `doPost` Web App 端點)。
+2. Apps Script 編輯器 → **部署 → 新增部署 → 類型「網頁應用程式」**,
+   執行身分「我」、誰可存取「**任何人**」→ 部署,copy 個 **Web app URL**。
+3. Apps Script **專案設定 → 指令碼屬性**,加一個 `WEBHOOK_TOKEN` = 你自訂嘅一串密碼。
+4. 喺 GitHub repo secrets 加:
+   - `SHEET_WEBHOOK_URL` = 上面個 Web app URL
+   - `WEBHOOK_TOKEN` = 同上面一樣嗰串密碼
+
+### 方式 B:email(SMTP)
 
 | Secret | 說明 |
 | --- | --- |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | 發 email 用嘅 SMTP |
 | `MAIL_FROM` | 寄件人(可選,預設同 `SMTP_USER`) |
 | `RECIPIENTS` | 收件人,逗號分隔(可選,預設 `alex@sshk.ltd`) |
+
+### 共用
+
+| Secret | 說明 |
+| --- | --- |
 | `AI_API_KEY` | DeepSeek API key(可選;冇就用純關鍵字 + tender 信號詞保守篩選) |
 | `AI_API_URL` / `AI_MODEL` | 可選,預設 DeepSeek |
 
-> 冇設定 `AI_API_KEY` 都行得:會用「關鍵字 + tender/RFP/招標 信號詞」保守篩選,
-> 但就冇 AI 幫手判斷截標日期有冇過期,可能有少量過期或無關項目,email 內會標明。
+> 兩個都唔設定嘅話,結果只會印喺 Actions log。冇設定 `AI_API_KEY` 都行得:
+> 會用「關鍵字 + tender/RFP/招標 信號詞」保守篩選,但就冇 AI 判斷截標日期有冇過期。
+
+## GitHub Actions
+
+`.github/workflows/playwright-scan.yml` 每日香港時間 **10:00**
+(排喺 Apps Script 主掃描 09:30 之後)自動執行,亦可喺 Actions 頁手動觸發。
 
 ## 同主掃描嘅分工
 

@@ -16,6 +16,17 @@ const RECIPIENTS = [
   // 'colleague2@sshk.ltd',
 ];
 
+// 🌟【新】發送方式開關:
+//    - SEND_EMAIL = true  → 發綜合報告 email
+//    - WRITE_TO_SHEET = true → 將發現直接寫入「掃描發現」分頁(可以唔靠 email,隨時開 Sheet 睇)
+//    兩個可以同時開,亦可以只開一個。想「唔要 email、淨係更新 Sheet」就:
+//    SEND_EMAIL = false; WRITE_TO_SHEET = true;
+const SEND_EMAIL = true;
+const WRITE_TO_SHEET = true;
+
+// 集中顯示所有發現嘅分頁名(自動建立)
+const FINDINGS_SHEET = '掃描發現';
+
 // 🌟【新】單次執行時間上限(毫秒)。超過就自動儲存進度,
 //    開一個一次性 trigger 一分鐘後由斷點繼續掃,唔會由頭嚟過。
 //    Workspace 帳戶上限 30 分鐘,預留 buffer 設 20 分鐘。
@@ -154,8 +165,66 @@ function mainTenderScanner() {
   props.deleteProperty('SCAN_SUMMARY');
   cleanupContinuationTrigger(props);
 
-  // 🌟【核心步驟】全掃描完成後,統一發送一封精美的 HTML 綜合報告電郵
-  sendConsolidatedEmail(summaryReport, todayStr);
+  // 🌟【核心步驟】全掃描完成後,按設定發送 email(發現已即時寫入「掃描發現」分頁)
+  if (SEND_EMAIL) {
+    sendConsolidatedEmail(summaryReport, todayStr);
+  }
+}
+
+// ============================================================
+// 🌟【新】Web App 端點:俾外部(GitHub Actions 上嘅 Playwright 補漏掃描器)
+//    直接將發現寫入 Sheet,唔使發 email。
+//
+// 部署方法:Apps Script 編輯器 → 部署 → 新增部署 → 類型「網頁應用程式」→
+//    執行身分「我」、誰可存取「任何人」→ 部署,copy 個 Web app URL。
+//    再喺「專案設定 → 指令碼屬性」加一個 WEBHOOK_TOKEN(自訂一串密碼),
+//    GitHub Actions 個 scanner 用同一個 token 先寫得入。
+// ============================================================
+function doPost(e) {
+  try {
+    const body = JSON.parse(e.postData.contents || '{}');
+    const token = PropertiesService.getScriptProperties().getProperty('WEBHOOK_TOKEN');
+    if (!token || body.token !== token) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'unauthorized' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let logSheet = ss.getSheetByName('Sent_Log');
+    if (!logSheet) {
+      logSheet = ss.insertSheet('Sent_Log');
+      logSheet.appendRow(['Date', 'URL', 'Tender Title', 'Tender Deadline']);
+    }
+    const items = Array.isArray(body.items) ? body.items : [];
+    let added = 0;
+    const logData = logSheet.getDataRange().getValues();
+    for (const it of items) {
+      const title = String(it.title || '').trim();
+      const url = String(it.url || '').trim();
+      if (!title) continue;
+      // 對照 Sent_Log 去重(URL + 標題)
+      const norm = title.toLowerCase();
+      let dup = false;
+      for (let i = 0; i < logData.length; i++) {
+        if (logData[i][1] === url && String(logData[i][2]).trim().toLowerCase() === norm) { dup = true; break; }
+      }
+      if (dup) continue;
+      logSheet.appendRow([new Date(), url, title, it.deadline || '未知']);
+      recordFindingToTab_(ss, {
+        org: it.org || '', title: title, deadline: it.deadline || '未知', url: url, source: it.source || '補漏掃描'
+      });
+      added++;
+    }
+    return ContentService.createTextOutput(JSON.stringify({ ok: true, added: added }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: String(err) }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function doGet() {
+  return ContentService.createTextOutput(JSON.stringify({ ok: true, service: 'autotender webhook' }))
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
 // Apps Script V8 冇瀏覽器嘅 URL class,自製相對路徑解析
@@ -262,6 +331,13 @@ function processFoundTender(orgName, tenderTitle, tenderDeadline, url, sheet, ro
   logSheet.appendRow([new Date(), url, tenderTitle, tenderDeadline]);
   updateStatus(sheet, rowIndex, "正常", `🔥 發現合適標書並已記錄:${tenderTitle} (截止: ${tenderDeadline})`);
 
+  // 🌟【新】直接寫入「掃描發現」分頁,方便隨時開 Sheet 睇(唔靠 email 都得)
+  if (WRITE_TO_SHEET) {
+    recordFindingToTab_(logSheet.getParent(), {
+      org: orgName, title: tenderTitle, deadline: tenderDeadline, url: url, source: '主掃描'
+    });
+  }
+
   // 塞入綜合電郵陣列
   summaryReport.suitableTenders.push({
     orgName: orgName,
@@ -269,6 +345,34 @@ function processFoundTender(orgName, tenderTitle, tenderDeadline, url, sheet, ro
     deadline: tenderDeadline,
     url: url
   });
+}
+
+// 🌟【新】將一個發現寫入「掃描發現」分頁(自動建立表頭、置頂新資料、去重)
+function recordFindingToTab_(ss, item) {
+  let sh = ss.getSheetByName(FINDINGS_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(FINDINGS_SHEET, 0); // 放喺最前,一開就見到
+    sh.appendRow(['發現日期', '機構名稱', '標書項目名稱', '截標日期', '來源', '連結', '狀態']);
+    sh.getRange(1, 1, 1, 7).setFontWeight('bold').setBackground('#1a73e8').setFontColor('#ffffff');
+    sh.setFrozenRows(1);
+    sh.setColumnWidths(1, 7, 140);
+  }
+  // 去重:同機構 + 同標題已經有就唔再加
+  const data = sh.getDataRange().getValues();
+  const normTitle = String(item.title).trim().toLowerCase();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][1]).trim() === String(item.org).trim() &&
+        String(data[i][2]).trim().toLowerCase() === normTitle) {
+      return; // 已存在
+    }
+  }
+  const now = Utilities.formatDate(new Date(), "GMT+8", "yyyy-MM-dd HH:mm");
+  // 新發現插入喺表頭下面(第 2 行),最新嘅永遠喺最頂
+  sh.insertRowAfter(1);
+  sh.getRange(2, 1, 1, 7).setValues([[
+    now, item.org, item.title, item.deadline || '未知', item.source || '', item.url, '🆕 待跟進'
+  ]]);
+  sh.getRange(2, 1, 1, 7).setBackground('#e8f5e9');
 }
 
 // 建立並發送精美的 HTML 綜合大報告

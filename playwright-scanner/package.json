@@ -1,0 +1,14 @@
+{
+  "name": "autotender-playwright-scanner",
+  "version": "1.0.0",
+  "description": "補漏掃描器:用 Playwright 真瀏覽器掃 Apps Script 掃唔到嘅受阻招標頁",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "scan": "node scan.mjs"
+  },
+  "dependencies": {
+    "nodemailer": "^6.9.14",
+    "playwright": "^1.56.1"
+  }
+}

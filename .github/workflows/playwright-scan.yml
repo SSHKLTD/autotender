@@ -52,9 +52,9 @@ jobs:
         run: |
           git config user.name "autotender-bot"
           git config user.email "autotender-bot@users.noreply.github.com"
-          git add playwright-scanner/state/seen_items.json
+          git add playwright-scanner/state/
           if ! git diff --cached --quiet; then
-            git commit -m "chore: update playwright scanner seen items [skip ci]"
+            git commit -m "chore: update playwright scanner state and findings [skip ci]"
             git push
           fi
         working-directory: .

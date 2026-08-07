@@ -16,6 +16,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..');
 const CSV_PATH = path.join(REPO, 'data', 'organisations.csv');
 const STATE_PATH = path.join(REPO, 'playwright-scanner', 'state', 'seen_items.json');
+const FINDINGS_CSV = path.join(REPO, 'playwright-scanner', 'state', 'findings.csv');
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
@@ -149,7 +150,21 @@ async function main() {
     else if (!wroteToSheet) console.log('ℹ️ 未設定 SHEET_WEBHOOK_URL 亦未設定 SMTP,結果只印喺 log');
   }
 
-  // 5. 更新已見紀錄
+  // 5. 零設定保底:發現一律 append 落 state/findings.csv(workflow 會 commit),
+  //    就算冇設定任何 webhook / SMTP,喺 GitHub repo 都睇到紀錄
+  if (newItems.length) {
+    const esc = (s) => `"${String(s).replace(/"/g, '""')}"`;
+    if (!fs.existsSync(FINDINGS_CSV)) {
+      fs.writeFileSync(FINDINGS_CSV, '﻿發現日期,機構名稱,標書項目名稱,截標日期,連結,來源\n');
+    }
+    const lines = newItems
+      .map((it) => [scanTime, it.org, it.title, it.deadline || '未知', it.link || '', '補漏掃描'].map(esc).join(','))
+      .join('\n');
+    fs.appendFileSync(FINDINGS_CSV, lines + '\n');
+    console.log(`已記錄 ${newItems.length} 個發現到 state/findings.csv`);
+  }
+
+  // 6. 更新已見紀錄
   for (const it of newItems) state.seen[it.uid] = scanTime;
   saveState(state);
 }

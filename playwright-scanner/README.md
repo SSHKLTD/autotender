@@ -54,8 +54,14 @@ Scanner 支援兩種通知方式,設定邊個 secret 就用邊個(可同時):
 
 ### 方式 A:直接寫入 Google Sheet(推薦,唔使搞 SMTP)
 
-發現會直接寫入你 Google Sheet 一個叫「**掃描發現**」嘅分頁(自動建立,最新永遠置頂),
-你隨時開 Sheet 就睇到,唔使收 email。做法:
+發現會直接寫入你 Google Sheet 一個叫「**掃描發現**」嘅分頁,
+你隨時開 Sheet 就睇到,唔使收 email。有兩條橋任揀一條:
+
+**A1. 經 n8n(最簡單,推薦)** — 見 [`../n8n/README.md`](../n8n/README.md):
+import 一個 workflow、喺 n8n UI 連 Google 帳戶,唔使部署 Apps Script Web App。
+`SHEET_WEBHOOK_URL` 指去 n8n 個 webhook URL 就得,payload 格式一樣。
+
+**A2. 經 Apps Script Web App** — 做法:
 
 1. 喺 Google Sheet:擴充功能 → Apps Script,確保用咗最新 `apps-script/Code.gs`
    (已含 `doPost` Web App 端點)。

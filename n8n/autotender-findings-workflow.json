@@ -1,0 +1,177 @@
+{
+  "name": "autotender — 補漏掃描寫入 Google Sheet",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "autotender-findings",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "wh-node-0001",
+      "name": "Webhook (收補漏掃描結果)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "autotender-findings"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "token-check",
+              "leftValue": "={{ $json.body.token }}",
+              "rightValue": "CHANGE_ME_SECRET_TOKEN",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-node-0002",
+      "name": "驗證 Token",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "body.items",
+        "options": {}
+      },
+      "id": "split-node-0003",
+      "name": "拆開每個發現",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [440, -100]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1Gqp8Hv9SOr4jj3gjtaLuSsjXqBMe2xlk-iKMTzpjGFo",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "掃描發現",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "發現日期": "={{ $now.setZone('Asia/Hong_Kong').toFormat('yyyy-MM-dd HH:mm') }}",
+            "機構名稱": "={{ $json.org }}",
+            "標書項目名稱": "={{ $json.title }}",
+            "截標日期": "={{ $json.deadline }}",
+            "來源": "={{ $json.source }}",
+            "連結": "={{ $json.url }}",
+            "狀態": "🆕 待跟進"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "gs-node-0004",
+      "name": "寫入 Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [660, -100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{ \"ok\": true }",
+        "options": {}
+      },
+      "id": "resp-ok-0005",
+      "name": "回覆成功",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [880, -100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{ \"ok\": false, \"error\": \"unauthorized\" }",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "resp-401-0006",
+      "name": "回覆未授權",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [440, 120]
+    }
+  ],
+  "connections": {
+    "Webhook (收補漏掃描結果)": {
+      "main": [
+        [
+          {
+            "node": "驗證 Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "驗證 Token": {
+      "main": [
+        [
+          {
+            "node": "拆開每個發現",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "回覆未授權",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "拆開每個發現": {
+      "main": [
+        [
+          {
+            "node": "寫入 Google Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "寫入 Google Sheet": {
+      "main": [
+        [
+          {
+            "node": "回覆成功",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

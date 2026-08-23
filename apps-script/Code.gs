@@ -12,8 +12,8 @@ const AI_MODEL = 'deepseek-chat';
 // 🌟【新】同事收件人名單:綜合報告會發俾以下所有人
 //    留空 [] 就會 fallback 返發俾執行 script 嘅人自己
 const RECIPIENTS = [
-  'alex@sshk.ltd',
-  // 'colleague2@sshk.ltd',
+  'you@example.com'  // ← 換返你自己嘅 email,
+  // 'colleague@example.com',
 ];
 
 // 🌟【新】發送方式開關:

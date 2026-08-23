@@ -17,14 +17,19 @@ const TENDER_SIGNALS = [
   '招標', '報價', '標書', '邀請', '建議書', '徵求',
 ];
 
-export function keywordCandidates(links) {
+const URL_SIGNAL_RE = /tender|rfp|rfq|quotation|procure|bidding|\beoi\b|invitation/i;
+
+export function keywordCandidates(links, baseUrl = '') {
   const seen = new Set();
   const out = [];
+  // 監察名單全部係招標專頁,頁面網址帶 tender 路徑本身已係信號
+  const pageSignal = URL_SIGNAL_RE.test(baseUrl);
   for (const { text, href } of links) {
     const low = text.toLowerCase();
     const matched = TARGET_KEYWORDS.filter((k) => low.includes(k));
     if (!matched.length) continue;
-    const hasSignal = TENDER_SIGNALS.some((s) => low.includes(s));
+    const hasSignal =
+      TENDER_SIGNALS.some((s) => low.includes(s)) || URL_SIGNAL_RE.test(href) || pageSignal;
     const key = text.slice(0, 120);
     if (seen.has(key)) continue;
     seen.add(key);

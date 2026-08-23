@@ -1,9 +1,9 @@
-name: Playwright 補漏掃描
+name: 每日全量掃描
 
 on:
   schedule:
-    # 每日香港時間 10:00(UTC 02:00),排喺 Apps Script 主掃描之後
-    - cron: "0 2 * * *"
+    # 每日香港時間 09:00(UTC 01:00);dashboard 10:00 更新,預留一粒鐘
+    - cron: "0 1 * * *"
   workflow_dispatch: {}
 
 permissions:

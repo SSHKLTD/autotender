@@ -1,8 +1,9 @@
-// autotender 補漏掃描器
-// 流程:讀機構名單 → 普通 fetch 探測 → 只對「抓唔到」嘅站用 Playwright 真瀏覽器
-//       → 關鍵字 + AI 過濾 → 對照已見紀錄去重 → email 俾同事 → 更新紀錄
+// autotender 全量掃描器(Sheets-free 主掃描)
+// 流程:讀機構名單 → 普通 fetch 全部站(成功就直接就地內容掃描)
+//       → 抓唔到嘅站先用 Playwright 真瀏覽器 → 關鍵字 + AI 過濾
+//       → 對照已見紀錄去重 → 寫入 state/findings.csv(dashboard 每日讀呢度)
 //
-// 與 Apps Script 主掃描互補:fetch 得到嘅站留返俾 Apps Script,避免重覆通知。
+// 唯一呈現介面係 Claude dashboard artifact;Google Sheet / email 為可選舊路。
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,11 +23,10 @@ const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 const CHALLENGE_MARKERS = ['Just a moment', 'Attention Required', 'Checking your browser', 'cf-browser-verification'];
 
-const RECIPIENTS = (process.env.RECIPIENTS || 'alex@sshk.ltd')
+const RECIPIENTS = (process.env.RECIPIENTS || '')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
 const DRY_RUN = process.argv.includes('--dry-run');
-const SCAN_ALL = process.argv.includes('--all'); // 預設只掃探測失敗嘅站
 
 function hkNow() {
   const d = new Date(Date.now() + 8 * 3600 * 1000);
@@ -45,8 +45,31 @@ function saveState(state) {
   fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + '\n');
 }
 
-// 普通 fetch 探測:成功(真.內容頁)就代表 Apps Script 都掃到 → 唔使 Playwright
-async function probe(url) {
+// 由普通 fetch 攞返嚟嘅 HTML 抽 links + 純文字(Playwright 路徑先有 DOM,呢度用輕量 regex)
+function extractFromHtml(html, baseUrl) {
+  const noScript = html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ');
+  const links = [];
+  const re = /<a\b[^>]*href=["']([^"'#]+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(noScript)) !== null && links.length < 400) {
+    const text = m[2].replace(/<[^>]*>/g, ' ').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+    if (text.length < 8) continue;
+    let href;
+    try { href = new URL(m[1], baseUrl).href; } catch { continue; }
+    links.push({ text, href });
+  }
+  const text = noScript
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return { links, text };
+}
+
+// 普通 fetch:成功就連內容一齊帶返嚟就地掃描,失敗先交 Playwright
+async function plainFetch(url) {
   try {
     const ctrl = AbortSignal.timeout(20000);
     const resp = await fetch(url, {
@@ -54,15 +77,35 @@ async function probe(url) {
       redirect: 'follow',
       signal: ctrl,
     });
-    if ([401, 403, 406, 429, 503].includes(resp.status)) return { accessible: false, reason: `HTTP ${resp.status}` };
     if (resp.status >= 400) return { accessible: false, reason: `HTTP ${resp.status}` };
     const body = await resp.text();
     if (body.length < 1500) return { accessible: false, reason: '內容過短(疑 JS 渲染)' };
-    if (CHALLENGE_MARKERS.some((m) => body.includes(m))) return { accessible: false, reason: 'Cloudflare 攔截' };
-    return { accessible: true, reason: 'ok' };
+    if (CHALLENGE_MARKERS.some((mk) => body.includes(mk))) return { accessible: false, reason: 'Cloudflare 攔截' };
+    return { accessible: true, body, finalUrl: resp.url || url };
   } catch (e) {
     return { accessible: false, reason: '連線失敗:' + String(e.name || e.message || e) };
   }
+}
+
+// 過濾:AI(有 key 時)判斷一項;無 key 就收最多 3 個「關鍵字+標書信號詞」強候選
+async function pickItems(org, links, text, today, baseUrl) {
+  const items = [];
+  const cands = keywordCandidates(links, baseUrl || org.url);
+  if (process.env.AI_API_KEY) {
+    const ai = await aiAnalyse(text, today);
+    if (ai && ai.isSuitable) {
+      items.push({
+        title: ai.tenderTitle || (cands[0] && cands[0].title) || '(見網頁)',
+        link: (cands[0] && cands[0].link) || org.url,
+        deadline: ai.tenderDeadline || '未知',
+      });
+    }
+  } else {
+    for (const c of cands.filter((c) => c.hasSignal).slice(0, 3)) {
+      items.push({ title: c.title, link: c.link, deadline: '未知(未經AI判斷)' });
+    }
+  }
+  return items;
 }
 
 async function main() {
@@ -70,25 +113,41 @@ async function main() {
   const state = loadState();
   const today = todayStr();
   const scanTime = hkNow();
-  console.log(`[${scanTime}] 補漏掃描開始,共 ${orgs.length} 個機構`);
-
-  // 1. 探測:揀出 Apps Script 掃唔到、需要 Playwright 嘅站
-  const needBrowser = [];
-  for (const o of orgs) {
-    if (SCAN_ALL) { needBrowser.push({ org: o, reason: '(--all)' }); continue; }
-    const p = await probe(o.url);
-    if (!p.accessible) needBrowser.push({ org: o, reason: p.reason });
-  }
-  console.log(`需用真瀏覽器嘅受阻站:${needBrowser.length} 個`);
+  console.log(`[${scanTime}] 全量掃描開始,共 ${orgs.length} 個機構`);
 
   const newItems = [];
   const stillBlocked = [];
+  const needBrowser = [];
+  let okCount = 0;
 
-  // 2. Playwright 逐個抓
+  const collect = async (org, links, text, baseUrl) => {
+    const picked = await pickItems(org, links, text, today, baseUrl);
+    let fresh = 0;
+    for (const it of picked) {
+      const uid = `${org.name}::${String(it.title).trim().toLowerCase()}`;
+      if (state.seen[uid]) continue;
+      newItems.push({ org: org.name, ...it, uid });
+      fresh++;
+    }
+    if (fresh) console.log(`  ★ ${org.name} — ${fresh} 個新候選:《${newItems.slice(-fresh).map((x) => x.title).join('》《')}》`);
+    return fresh;
+  };
+
+  // 1. 普通 fetch 全部站;成功嘅即場內容掃描,失敗嘅排隊等 Playwright
+  for (const org of orgs) {
+    const p = await plainFetch(org.url);
+    if (!p.accessible) { needBrowser.push({ org, reason: p.reason }); continue; }
+    okCount++;
+    const { links, text } = extractFromHtml(p.body, p.finalUrl);
+    await collect(org, links, text, p.finalUrl);
+  }
+  console.log(`普通 fetch 掃完 ${okCount} 個站;需用真瀏覽器:${needBrowser.length} 個`);
+
+  // 2. 受阻站行 Playwright
   const browser = await launchBrowser();
   const ctx = await newContext(browser);
   try {
-    for (const { org, reason } of needBrowser) {
+    for (const { org } of needBrowser) {
       let res;
       try {
         res = await fetchPage(ctx, org.url);
@@ -100,71 +159,43 @@ async function main() {
         stillBlocked.push({ name: org.name, url: org.url, reason: res.challenged ? '真瀏覽器仍被攔截' : (res.error || `HTTP ${res.status}`) });
         continue;
       }
-      // 3. 過濾:關鍵字候選 → AI 判斷
-      const cands = keywordCandidates(res.links);
-      let picked = null;
-      const ai = await aiAnalyse(res.text, today);
-      if (ai && ai.isSuitable) {
-        picked = { title: ai.tenderTitle || (cands[0] && cands[0].title) || '(見網頁)', link: org.url, deadline: ai.tenderDeadline };
-      } else if (!process.env.AI_API_KEY && cands.length) {
-        // 無 AI key:用「關鍵字 + tender 信號詞」嘅候選作保守通知
-        const strong = cands.find((c) => c.hasSignal);
-        if (strong) picked = { title: strong.title, link: strong.link, deadline: '未知(未經AI判斷)' };
-      }
-
-      if (picked) {
-        const uid = `${org.name}::${String(picked.title).trim().toLowerCase()}`;
-        if (state.seen[uid]) {
-          console.log(`  = ${org.name} — 《${picked.title}》屬歷史重覆,跳過`);
-        } else {
-          console.log(`  ★ ${org.name} — 新標書:《${picked.title}》`);
-          newItems.push({ org: org.name, ...picked, uid });
-        }
-      } else {
-        console.log(`  ○ ${org.name} — 抓取成功,暫無合適標書`);
-      }
+      const fresh = await collect(org, res.links, res.text);
+      if (!fresh) console.log(`  ○ ${org.name} — 抓取成功,暫無合適新標書`);
     }
   } finally {
     await ctx.close();
     await browser.close();
   }
 
-  console.log(`結果:新標書 ${newItems.length} 個,仍受阻 ${stillBlocked.length} 個`);
+  console.log(`結果:新標書候選 ${newItems.length} 個,仍受阻 ${stillBlocked.length} 個`);
 
-  if (DRY_RUN) { console.log('(--dry-run:唔寫 Sheet、唔發 email、唔更新紀錄)'); return; }
+  if (DRY_RUN) { console.log('(--dry-run:唔寫紀錄)'); return; }
 
-  // 4a. 直接寫入 Google Sheet(如有設定 SHEET_WEBHOOK_URL)
-  let wroteToSheet = false;
-  if (newItems.length) {
-    const r = await postToSheet(newItems);
-    if (r.ok) { wroteToSheet = true; console.log(`已寫入 Google Sheet「掃描發現」分頁:新增 ${r.added} 個`); }
-    else if (!r.skipped) console.log(`⚠️ 寫入 Sheet 失敗:${r.error || JSON.stringify(r.raw)}`);
-  }
-
-  // 4b. Email(如有設定 SMTP;同 Sheet 可並存,亦可只用其一)
-  if (newItems.length || stillBlocked.length) {
-    const subject = `[autotender補漏] ${newItems.length} 個新標書 · ${stillBlocked.length} 個仍受阻 — ${scanTime}`;
-    const html = buildHtml(newItems, stillBlocked, scanTime);
-    const sent = await sendEmail(subject, html, RECIPIENTS);
-    if (sent) console.log(`已發送 email 俾 ${RECIPIENTS.join(', ')}`);
-    else if (!wroteToSheet) console.log('ℹ️ 未設定 SHEET_WEBHOOK_URL 亦未設定 SMTP,結果只印喺 log');
-  }
-
-  // 5. 零設定保底:發現一律 append 落 state/findings.csv(workflow 會 commit),
-  //    就算冇設定任何 webhook / SMTP,喺 GitHub repo 都睇到紀錄
+  // 3.【主要出口】寫入 state/findings.csv,workflow commit 後 dashboard 每日讀呢度
   if (newItems.length) {
     const esc = (s) => `"${String(s).replace(/"/g, '""')}"`;
     if (!fs.existsSync(FINDINGS_CSV)) {
       fs.writeFileSync(FINDINGS_CSV, '﻿發現日期,機構名稱,標書項目名稱,截標日期,連結,來源\n');
     }
     const lines = newItems
-      .map((it) => [scanTime, it.org, it.title, it.deadline || '未知', it.link || '', '補漏掃描'].map(esc).join(','))
+      .map((it) => [scanTime, it.org, it.title, it.deadline || '未知', it.link || '', '全量掃描'].map(esc).join(','))
       .join('\n');
     fs.appendFileSync(FINDINGS_CSV, lines + '\n');
     console.log(`已記錄 ${newItems.length} 個發現到 state/findings.csv`);
   }
 
-  // 6. 更新已見紀錄
+  // 4.(可選舊路)Google Sheet webhook / email — 冇設定 secrets 就自動跳過
+  if (newItems.length) {
+    const r = await postToSheet(newItems);
+    if (r.ok) console.log(`已寫入 Google Sheet:新增 ${r.added} 個`);
+  }
+  if (RECIPIENTS.length && (newItems.length || stillBlocked.length)) {
+    const subject = `[autotender] ${newItems.length} 個新標書 · ${stillBlocked.length} 個受阻 — ${scanTime}`;
+    const sent = await sendEmail(subject, buildHtml(newItems, stillBlocked, scanTime), RECIPIENTS);
+    if (sent) console.log(`已發送 email 俾 ${RECIPIENTS.join(', ')}`);
+  }
+
+  // 5. 更新已見紀錄
   for (const it of newItems) state.seen[it.uid] = scanTime;
   saveState(state);
 }

@@ -55,6 +55,10 @@ jobs:
           git add playwright-scanner/state/
           if ! git diff --cached --quiet; then
             git commit -m "chore: update playwright scanner state and findings [skip ci]"
-            git push
+            # 防 race:掃描期間有其他 commit 推上嚟就 rebase 再推,重試 3 次
+            for i in 1 2 3; do
+              git pull --rebase origin "${GITHUB_REF_NAME}" && git push && break
+              sleep 5
+            done
           fi
         working-directory: .

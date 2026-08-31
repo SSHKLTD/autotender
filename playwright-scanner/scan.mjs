@@ -135,6 +135,8 @@ async function main() {
 
   // 1. 普通 fetch 全部站;成功嘅即場內容掃描,失敗嘅排隊等 Playwright
   for (const org of orgs) {
+    // JS 渲染站(HTML 殼夠大唔會 fail,但冇內容)—— 備註標「強制瀏覽器」直接行 Playwright
+    if (org.remark.includes('強制瀏覽器')) { needBrowser.push({ org, reason: '強制瀏覽器' }); continue; }
     const p = await plainFetch(org.url);
     if (!p.accessible) { needBrowser.push({ org, reason: p.reason }); continue; }
     okCount++;
